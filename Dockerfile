@@ -1,9 +1,10 @@
 FROM alpine:3 AS build
-RUN apk add --no-cache gcc musl-dev make
-COPY rebound.c Makefile /src/
-WORKDIR /src
-RUN make static
+RUN apk add --no-cache cmake gcc make musl-dev
+COPY rebound.c CMakeLists.txt /src/
+WORKDIR /src/build
+RUN cmake -DBUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake --build .
 
 FROM scratch
-COPY --from=build /src/rebound /rebound
+COPY --from=build /src/build/rebound /rebound
 ENTRYPOINT ["/rebound"]
