@@ -4,8 +4,9 @@
  * Spawns a child process via fork/exec, forwards signals, reaps zombies,
  * and restarts the child on unexpected exits. Suitable as PID 1.
  *
- * Usage: rebound [-0] <binary> [args...]
+ * Usage: rebound [-0] [-g] <binary> [args...]
  *   -0  Also restart when child exits with code 0
+ *   -g  Place the child in its own process group
  */
 
 #define _POSIX_C_SOURCE 199309L
@@ -36,8 +37,9 @@ static sigset_t original_mask;
  * Prints usage information to stderr and exits with code 1.
  */
 static void usage(void) {
-  fprintf(stderr, "Usage: %s [-0] <binary> [args...]\n", progname);
+  fprintf(stderr, "Usage: %s [-0] [-g] <binary> [args...]\n", progname);
   fprintf(stderr, "  -0  Also restart when child exits with code 0\n");
+  fprintf(stderr, "  -g  Place the child in its own process group\n");
   exit(1);
 }
 
@@ -103,19 +105,21 @@ static void restore_signals_in_child(void) {
  * Function: spawn_child
  *
  * Forks a new child process and execs the command specified in argv.
- * The child is placed in its own process group via setpgid for signal
- * isolation. Signal mask and dispositions are restored before exec.
+ * By default the child inherits the parent's process group. If own_group
+ * is set, the child is placed in its own process group via setpgid for
+ * signal isolation. Signal mask and dispositions are restored before exec.
  *
  * Parameters:
  *
- *   argv - Null-terminated argument vector. argv[0] is the binary name,
- *          looked up via PATH (execvp).
+ *   argv      - Null-terminated argument vector. argv[0] is the binary name,
+ *               looked up via PATH (execvp).
+ *   own_group - If non-zero, place the child in its own process group.
  *
  * Returns:
  *
  *   The child PID on success, or -1 if fork fails.
  */
-static pid_t spawn_child(char** argv) {
+static pid_t spawn_child(char** argv, int own_group) {
   pid_t pid = fork();
 
   if (pid < 0) {
@@ -125,7 +129,8 @@ static pid_t spawn_child(char** argv) {
 
   if (pid == 0) {
     /* Child */
-    setpgid(0, 0);
+    if (own_group)
+      setpgid(0, 0);
     restore_signals_in_child();
     execvp(argv[0], argv);
     fprintf(stderr, "%s: exec %s: %s\n", progname, argv[0], strerror(errno));
@@ -232,21 +237,27 @@ static int should_restart(int status, int restart_on_zero) {
 
 int main(int argc, char** argv) {
   int restart_on_zero = 0;
+  int own_group = 0;
   int got_term = 0;
   int rapid_fail_count = 0;
   char** child_argv;
   int opt;
 
   static struct option long_options[] = {
-      {"restart-on-zero", no_argument, NULL, '0'}, {NULL, 0, NULL, 0}};
+      {"restart-on-zero", no_argument, NULL, '0'},
+      {"own-group", no_argument, NULL, 'g'},
+      {NULL, 0, NULL, 0}};
 
   if (argc > 0)
     progname = argv[0];
 
-  while ((opt = getopt_long(argc, argv, "+0", long_options, NULL)) != -1) {
+  while ((opt = getopt_long(argc, argv, "+0g", long_options, NULL)) != -1) {
     switch (opt) {
       case '0':
         restart_on_zero = 1;
+        break;
+      case 'g':
+        own_group = 1;
         break;
       default:
         usage();
@@ -270,7 +281,7 @@ int main(int argc, char** argv) {
 
     clock_gettime(CLOCK_MONOTONIC, &spawn_time);
 
-    child_pid = spawn_child(child_argv);
+    child_pid = spawn_child(child_argv, own_group);
     if (child_pid < 0) {
       /* fork failed — sleep and retry */
       struct timespec delay = {.tv_sec = 1, .tv_nsec = 0};

@@ -136,4 +136,100 @@ SH
     unlink $ready;
 };
 
+subtest '-g puts child in its own process group' => sub {
+    my $pgid_file = "/tmp/rebound_test_pgid_$$";
+    my $ready = "/tmp/rebound_test_pgid_ready_$$";
+    my $script = make_script(<<"SH");
+echo \$(ps -o pgid= -p \$\$) > $pgid_file
+touch $ready
+while true; do sleep 0.1; done
+SH
+
+    unlink $pgid_file;
+    unlink $ready;
+    my ($err_fh, $err_file) = tempfile(UNLINK => 1);
+    close $err_fh;
+
+    my $pid = fork();
+    die "fork: $!" unless defined $pid;
+
+    if ($pid == 0) {
+        open STDERR, '>', $err_file or die;
+        exec $REBOUND, '-g', $script;
+        die "exec: $!";
+    }
+
+    # Wait for child to write its pgid
+    my $waited = 0;
+    while ($waited < 3) {
+        last if -f $ready;
+        sleep 0.05;
+        $waited += 0.05;
+    }
+    ok(-f $ready, 'child started');
+
+    open my $fh, '<', $pgid_file or die "open: $!";
+    my $child_pgid = <$fh>;
+    close $fh;
+    chomp $child_pgid;
+    $child_pgid =~ s/\s//g;
+
+    # The child's pgid should differ from rebound's pid (its own group)
+    isnt($child_pgid, $pid, 'child pgid differs from rebound pid (own group)');
+
+    kill 'TERM', $pid;
+    waitpid($pid, 0);
+    unlink $pgid_file;
+    unlink $ready;
+};
+
+subtest 'without -g child shares parent process group' => sub {
+    my $pgid_file = "/tmp/rebound_test_pgid2_$$";
+    my $ready = "/tmp/rebound_test_pgid2_ready_$$";
+    my $script = make_script(<<"SH");
+echo \$(ps -o pgid= -p \$\$) > $pgid_file
+touch $ready
+while true; do sleep 0.1; done
+SH
+
+    unlink $pgid_file;
+    unlink $ready;
+    my ($err_fh, $err_file) = tempfile(UNLINK => 1);
+    close $err_fh;
+
+    my $pid = fork();
+    die "fork: $!" unless defined $pid;
+
+    if ($pid == 0) {
+        # Put ourselves in our own group so we have a known pgid
+        setpgrp(0, 0);
+        open STDERR, '>', $err_file or die;
+        exec $REBOUND, $script;
+        die "exec: $!";
+    }
+
+    # Wait for child to write its pgid
+    my $waited = 0;
+    while ($waited < 3) {
+        last if -f $ready;
+        sleep 0.05;
+        $waited += 0.05;
+    }
+    ok(-f $ready, 'child started');
+
+    open my $fh, '<', $pgid_file or die "open: $!";
+    my $child_pgid = <$fh>;
+    close $fh;
+    chomp $child_pgid;
+    $child_pgid =~ s/\s//g;
+
+    # Without -g, the child should be in the same group as rebound
+    is($child_pgid, $pid, 'child pgid matches rebound pid (shared group)');
+
+    kill 'TERM', $pid;
+    waitpid($pid, 0);
+    unlink $pgid_file;
+    unlink $ready;
+};
+
 done_testing;
