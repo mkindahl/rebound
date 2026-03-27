@@ -1,0 +1,22 @@
+# Build rebound as a static musl binary and copy into a scratch image.
+# Produces the smallest possible image — nothing but the rebound binary.
+#
+# Build:
+#   docker build -f examples/Dockerfile.scratch -t rebound:scratch .
+#
+# Usage:
+#   docker run rebound:scratch /path/to/static-binary --flag
+#
+# Note: The child binary must also be statically linked since scratch
+# contains no libc or dynamic linker.
+
+FROM alpine:3 AS build
+RUN apk add --no-cache cmake gcc make musl-dev
+COPY rebound.c CMakeLists.txt /src/
+WORKDIR /src/build
+RUN cmake -DBUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake --build .
+
+FROM scratch
+COPY --from=build /src/build/rebound /rebound
+ENTRYPOINT ["/rebound"]

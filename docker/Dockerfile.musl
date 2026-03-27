@@ -1,0 +1,19 @@
+# Build rebound as a static musl binary on Alpine.
+# The resulting image is Alpine-based with the static binary installed.
+#
+# Build:
+#   docker build -f examples/Dockerfile.musl -t rebound:musl .
+#
+# Usage:
+#   docker run rebound:musl myapp --flag
+
+FROM alpine:3 AS build
+RUN apk add --no-cache cmake gcc make musl-dev
+COPY rebound.c CMakeLists.txt /src/
+WORKDIR /src/build
+RUN cmake -DBUILD_STATIC=ON -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake --build .
+
+FROM alpine:3
+COPY --from=build /src/build/rebound /usr/local/bin/rebound
+ENTRYPOINT ["rebound"]

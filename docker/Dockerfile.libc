@@ -1,0 +1,21 @@
+# Build rebound as a dynamically linked glibc binary on Debian.
+# Suitable when the runtime image already has glibc (Debian, Ubuntu, etc.).
+#
+# Build:
+#   docker build -f examples/Dockerfile.libc -t rebound:libc .
+#
+# Usage:
+#   docker run rebound:libc myapp --flag
+
+FROM debian:bookworm-slim AS build
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends cmake gcc libc6-dev make && \
+    rm -rf /var/lib/apt/lists/*
+COPY rebound.c CMakeLists.txt /src/
+WORKDIR /src/build
+RUN cmake -DCMAKE_BUILD_TYPE=Release .. && \
+    cmake --build .
+
+FROM debian:bookworm-slim
+COPY --from=build /src/build/rebound /usr/local/bin/rebound
+ENTRYPOINT ["rebound"]
