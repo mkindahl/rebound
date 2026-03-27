@@ -41,7 +41,7 @@ Rebound forks and execs the given command, then sits in a signal loop:
 ## Usage
 
 ```
-rebound [-0] <binary> [args...]
+rebound [-0] [-g] <binary> [args...]
 ```
 
 ### Options
@@ -49,6 +49,25 @@ rebound [-0] <binary> [args...]
 | Option                    | Description                                   |
 |---------------------------|-----------------------------------------------|
 | `-0`, `--restart-on-zero` | Also restart when the child exits with code 0 |
+| `-g`, `--own-group`       | Place the child in its own process group      |
+
+### Process groups
+
+By default, the child shares the parent's process group. This means
+terminal-generated signals (Ctrl-C, Ctrl-Z) are delivered by the kernel to
+both rebound and the child simultaneously, which is the expected behavior
+for interactive use.
+
+With `-g`, the child is placed in its own process group via `setpgid`. This
+is useful when:
+
+- Running as PID 1 in a Docker container, where terminal signals are not
+  relevant and you want rebound to have exclusive control over signal
+  delivery to the child.
+- The child uses `kill(0, ...)` to signal its own process tree, and you want
+  to prevent that from accidentally reaching rebound.
+- You plan to signal the entire child process tree at once (e.g., via
+  `kill(-pid, sig)` from an external tool).
 
 ### Examples
 
@@ -83,7 +102,7 @@ CMD ["my-server", "--port", "8080"]
 ### Build with CMake
 
 ```sh
-mkdir build && cd build
+mkdir cmake-build && cd cmake-build
 cmake ..
 cmake --build .
 ```
@@ -115,7 +134,7 @@ Tests are written in Perl using `prove` (TAP harness).
 
 ```sh
 # Via CMake/CTest
-cd build
+cd cmake-build
 ctest --output-on-failure
 
 # Directly with prove
@@ -124,21 +143,21 @@ prove -v t/
 
 ### Test files
 
-| File            | Coverage                                                             |
-|-----------------|----------------------------------------------------------------------|
-| `t/exit_zero.t` | Exit code 0 handling, `-0` flag, exit code propagation               |
-| `t/signals.t`   | Signal forwarding, SIGTERM/SIGINT shutdown, restart on crash signals |
-| `t/failures.t`  | Restart on non-zero exit, crash loop protection, recovery            |
+| File          | Coverage                                                             |
+|---------------|----------------------------------------------------------------------|
+| `exit_zero.t` | Exit code 0 handling, `-0` flag, exit code propagation               |
+| `signals.t`   | Signal forwarding, SIGTERM/SIGINT shutdown, restart on crash signals |
+| `failures.t`  | Restart on non-zero exit, crash loop protection, recovery            |
 
 ## Docker
 
 Example Dockerfiles are provided in `examples/`:
 
-| File                          | Description                                  |
-|-------------------------------|----------------------------------------------|
-| `examples/Dockerfile.musl`    | Static musl binary on Alpine                 |
-| `examples/Dockerfile.scratch` | Static musl binary in a `FROM scratch` image |
-| `examples/Dockerfile.libc`    | Dynamic glibc binary on Debian               |
+| File                 | Description                                  |
+|----------------------|----------------------------------------------|
+| `Dockerfile.musl`    | Static musl binary on Alpine                 |
+| `Dockerfile.scratch` | Static musl binary in a `FROM scratch` image |
+| `Dockerfile.libc`    | Dynamic glibc binary on Debian               |
 
 Build an example:
 
@@ -152,23 +171,8 @@ Generate reference documentation from source comments (requires
 [NaturalDocs](https://www.naturaldocs.org/)):
 
 ```sh
-cd build
+cd cmake-build
 cmake --build . --target docs
 ```
 
-Output is written to `build/docs/`.
-
-## Comparison with tini and gosu
-
-|                       | rebound | tini | gosu            |
-|-----------------------|---------|------|-----------------|
-| PID 1 signal handling | Yes     | Yes  | No (execs away) |
-| Zombie reaping        | Yes     | Yes  | No              |
-| Signal forwarding     | Yes     | Yes  | No              |
-| Restart on crash      | Yes     | No   | No              |
-| User switching        | No      | No   | Yes             |
-
-**tini** is a pure init — it runs a child, forwards signals, reaps zombies, and
-exits when the child exits. **gosu** switches user and execs, removing itself
-from the process tree. **rebound** adds restart-on-crash semantics on top of
-tini-style PID 1 responsibilities.
+Output is written to `cmake-build/docs/`.
