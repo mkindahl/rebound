@@ -1,0 +1,40 @@
+name: Docker Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - dockerfile: Dockerfile
+            tag_suffix: scratch
+          - dockerfile: docker/Dockerfile.musl
+            tag_suffix: musl
+          - dockerfile: docker/Dockerfile.libc
+            tag_suffix: libc
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/rebound:${{ matrix.tag_suffix }}
+            ${{ secrets.DOCKERHUB_USERNAME }}/rebound:${{ steps.version.outputs.version }}-${{ matrix.tag_suffix }}
