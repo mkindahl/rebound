@@ -151,7 +151,59 @@ prove -v t/
 
 ## Docker
 
-Example Dockerfiles are provided in `examples/`:
+### Pre-built images
+
+Pre-built images are available on Docker Hub:
+
+| Image                       | Description                                  |
+|-----------------------------|----------------------------------------------|
+| `mkindahl/rebound:musl`    | Static musl binary on Alpine                 |
+| `mkindahl/rebound:scratch` | Static musl binary in a `FROM scratch` image |
+| `mkindahl/rebound:libc`    | Dynamic glibc binary on Debian               |
+
+Version-specific tags are also available (e.g., `mkindahl/rebound:1.0.0-musl`).
+
+### Using rebound in your own image
+
+Use a multi-stage build to copy rebound into your application image:
+
+```dockerfile
+FROM mkindahl/rebound:musl AS rebound
+
+FROM debian:bookworm-slim
+COPY --from=rebound /usr/local/bin/rebound /usr/local/bin/rebound
+COPY my-server /usr/local/bin/my-server
+ENTRYPOINT ["rebound"]
+CMD ["my-server", "--port", "8080"]
+```
+
+For Alpine-based images:
+
+```dockerfile
+FROM mkindahl/rebound:musl AS rebound
+
+FROM alpine:3
+COPY --from=rebound /usr/local/bin/rebound /usr/local/bin/rebound
+RUN apk add --no-cache my-app
+ENTRYPOINT ["rebound"]
+CMD ["my-app"]
+```
+
+For minimal images where both rebound and your binary are statically linked:
+
+```dockerfile
+FROM mkindahl/rebound:scratch AS rebound
+
+FROM scratch
+COPY --from=rebound /rebound /rebound
+COPY my-static-binary /my-app
+ENTRYPOINT ["/rebound"]
+CMD ["/my-app"]
+```
+
+### Building Dockerfiles from source
+
+Example Dockerfiles are provided in `docker/`:
 
 | File                 | Description                                  |
 |----------------------|----------------------------------------------|
@@ -162,7 +214,7 @@ Example Dockerfiles are provided in `examples/`:
 Build an example:
 
 ```sh
-docker build -f examples/Dockerfile.scratch -t rebound:scratch .
+docker build -f docker/Dockerfile.scratch -t rebound:scratch .
 ```
 
 ## Documentation
