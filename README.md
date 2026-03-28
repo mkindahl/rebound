@@ -4,22 +4,40 @@ A minimal process supervisor for Docker containers, written in C. Rebound
 spawns a child process, forwards signals, reaps zombies, and restarts the
 child on unexpected exits. It is designed to run as PID 1 inside a container.
 
+It is intended to be used when you have a process inside a constainer that need
+to restart on failure. For example, if you have a control plan process inside a
+container that is stateless and just need to restart on failure. Kubernetes can
+normally handle restart of failing containers, but if you for some reason need
+to have multiple processes inside a container and do not want to restart the
+container if certain processes fails, you can use this.
+
+A typical example is if you have a control plan process to control a database
+server, such as a PostgreSQL process, but you do not want to restart the
+container if the control plan process fails since that would restart the
+database as well.
+
 ## Benefits
 
-- **Tiny footprint** — single static binary, under 50 KB with musl. No runtime
-  dependencies, works in `FROM scratch` images.
+- **Tiny footprint** — single static binary, under 50 KB with `musl`. No runtime
+  dependencies so it works also in `FROM scratch` images.
+
 - **Correct PID 1 behavior** — handles signal forwarding and zombie reaping so
   your application doesn't have to. Fixes the common Docker problem where
-  SIGTERM is silently ignored because PID 1 has no default signal handlers.
+  `SIGTERM` is silently ignored because PID 1 has no default signal handlers.
+
 - **Automatic crash recovery** — restarts the child on segfaults, assertion
   failures, and non-zero exits without external orchestration. Keeps your
   container running through transient failures.
+
 - **Crash loop protection** — detects rapid restarts and backs off, preventing
   CPU spin when the child can't start.
+
 - **Clean shutdown** — SIGTERM and SIGINT are forwarded and cause rebound to
   exit, so `docker stop` works as expected with no restart loop.
+
 - **Zero configuration** — no config files, no environment variables. One
   binary, one flag (`-0`), done.
+
 - **Transparent to the child** — signals are restored before exec, the child
   runs in its own process group, and stdout/stderr pass through untouched.
   The child doesn't know rebound is there.
@@ -28,13 +46,16 @@ child on unexpected exits. It is designed to run as PID 1 inside a container.
 
 Rebound forks and execs the given command, then sits in a signal loop:
 
-- **Signals** are forwarded to the child process (SIGTERM, SIGINT, SIGHUP,
-  SIGUSR1, etc.).
+- **Signals** are forwarded to the child process (`SIGTERM`, `SIGINT`, `SIGHUP`,
+  `SIGUSR1`, etc.).
+
 - **Zombie processes** are reaped, including orphans re-parented to PID 1.
+
 - **On child exit**, the restart decision depends on how the child exited:
   - Exit code 0 — stop (unless `-0` is given)
-  - Killed by SIGTERM or SIGINT — stop
+  - Killed by `SIGTERM` or `SIGINT` — stop
   - Any other exit (non-zero code, other signals) — restart the child
+
 - **Crash loop protection** kicks in after 5 rapid failures, inserting a
   1-second delay between restarts.
 
@@ -54,18 +75,20 @@ rebound [-0] [-g] <binary> [args...]
 ### Process groups
 
 By default, the child shares the parent's process group. This means
-terminal-generated signals (Ctrl-C, Ctrl-Z) are delivered by the kernel to
-both rebound and the child simultaneously, which is the expected behavior
+terminal-generated signals (Ctrl-C, Ctrl-Z) are delivered by the kernel to both
+`rebound` process and the child simultaneously, which is the expected behavior
 for interactive use.
 
 With `-g`, the child is placed in its own process group via `setpgid`. This
 is useful when:
 
 - Running as PID 1 in a Docker container, where terminal signals are not
-  relevant and you want rebound to have exclusive control over signal
+  relevant and you want `rebound` to have exclusive control over signal
   delivery to the child.
+
 - The child uses `kill(0, ...)` to signal its own process tree, and you want
-  to prevent that from accidentally reaching rebound.
+  to prevent that from accidentally reaching `rebound`.
+
 - You plan to signal the entire child process tree at once (e.g., via
   `kill(-pid, sig)` from an external tool).
 
@@ -102,9 +125,8 @@ CMD ["my-server", "--port", "8080"]
 ### Build with CMake
 
 ```sh
-mkdir cmake-build && cd cmake-build
-cmake ..
-cmake --build .
+cmake -S . -B cmake-build
+cmake --build cmake-build
 ```
 
 ### Build options
@@ -134,8 +156,7 @@ Tests are written in Perl using `prove` (TAP harness).
 
 ```sh
 # Via CMake/CTest
-cd cmake-build
-ctest --output-on-failure
+ctest --output-on-failure --test-dir cmake-build
 
 # Directly with prove
 prove -v t/
@@ -163,9 +184,10 @@ Pre-built images are available on Docker Hub:
 
 Version-specific tags are also available (e.g., `mkindahl/rebound:1.0.0-musl`).
 
-### Using rebound in your own image
+### Using `rebound` in your own image
 
-Use a multi-stage build to copy rebound into your application image:
+You can use the pre-built images in your own multi-stage build to copy `rebound`
+into your application image:
 
 ```dockerfile
 FROM mkindahl/rebound:musl AS rebound
@@ -189,7 +211,7 @@ ENTRYPOINT ["rebound"]
 CMD ["my-app"]
 ```
 
-For minimal images where both rebound and your binary are statically linked:
+For minimal images where both `rebound` and your binary are statically linked:
 
 ```dockerfile
 FROM mkindahl/rebound:scratch AS rebound
