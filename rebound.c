@@ -4,9 +4,12 @@
  * Spawns a child process via fork/exec, forwards signals, reaps zombies,
  * and restarts the child on unexpected exits. Suitable as PID 1.
  *
- * Usage: rebound [-0] [-g] <binary> [args...]
- *   -0  Also restart when child exits with code 0
- *   -g  Place the child in its own process group
+ * Usage: rebound [-0] [-g] [-q] [-r N] [-d SECS] <binary> [args...]
+ *   -0        Also restart when child exits with code 0
+ *   -g        Place the child in its own process group
+ *   -q        Run in quiet mode
+ *   -r N      Maximum number of restarts (0 = unlimited, the default)
+ *   -d SECS   Delay in seconds before restarting the child
  */
 
 #define _POSIX_C_SOURCE 199309L
@@ -24,9 +27,8 @@
 
 #include <sys/wait.h>
 
-#define RAPID_FAIL_THRESHOLD 5
+#define DEFAULT_BURST_LIMIT 5
 #define RAPID_FAIL_WINDOW_NS 1000000000L /* 1 second */
-#define RESTART_DELAY_NS 1000000000L     /* 1 second */
 
 static const char* progname = "rebound";
 static volatile pid_t child_pid = -1;
@@ -36,6 +38,10 @@ static bool restart_on_zero = false;
 static bool own_group = false;
 static bool got_term = false;
 static bool quiet_mode = false;
+static int max_restarts = 0;
+static int burst_limit = DEFAULT_BURST_LIMIT;
+static double restart_delay = 0.0;
+static int restart_count = 0;
 static int rapid_fail_count = 0;
 
 static void emit_log(const char* fmt, ...) {
@@ -53,6 +59,9 @@ static struct option long_options[] = {
     {"restart-on-zero", no_argument, NULL, '0'},
     {"own-group", no_argument, NULL, 'g'},
     {"quiet", no_argument, NULL, 'q'},
+    {"max-restarts", required_argument, NULL, 'r'},
+    {"restart-delay", required_argument, NULL, 'd'},
+    {"burst", required_argument, NULL, 'b'},
     {NULL, 0, NULL, 0}};
 
 /*
@@ -61,10 +70,17 @@ static struct option long_options[] = {
  * Prints usage information to stderr and exits with code 1.
  */
 static void usage(void) {
-  fprintf(stderr, "Usage: %s [-0] [-g] [-q] <binary> [args...]\n", progname);
-  fprintf(stderr, "  -0  Also restart when child exits with code 0\n");
-  fprintf(stderr, "  -g  Place the child in its own process group\n");
-  fprintf(stderr, "  -q  Run in quiet mode\n");
+  fprintf(stderr, "Usage: %s <options> <binary> [args...]\n", progname);
+  fprintf(stderr, "  -0        Also restart when child exits with code 0\n");
+  fprintf(stderr, "  -g        Place the child in its own process group\n");
+  fprintf(stderr, "  -q        Run in quiet mode\n");
+  fprintf(stderr,
+          "  -r N      Maximum number of restarts (0 = unlimited, default)\n");
+  fprintf(stderr, "  -d SECS   Delay in seconds before restarting the child\n");
+  fprintf(stderr,
+          "  -b N      Rapid failure burst limit before throttling (default: "
+          "%d, 0 = disable)\n",
+          DEFAULT_BURST_LIMIT);
   exit(1);
 }
 
@@ -279,7 +295,8 @@ char** parse_options(int argc, char** argv) {
   if (argc > 0)
     progname = argv[0];
 
-  while ((opt = getopt_long(argc, argv, "+0gq", long_options, NULL)) != -1) {
+  while ((opt = getopt_long(argc, argv, "+0gqr:d:b:", long_options, NULL)) !=
+         -1) {
     switch (opt) {
       case '0':
         restart_on_zero = true;
@@ -289,6 +306,27 @@ char** parse_options(int argc, char** argv) {
         break;
       case 'q':
         quiet_mode = true;
+        break;
+      case 'r':
+        max_restarts = atoi(optarg);
+        if (max_restarts < 0) {
+          fprintf(stderr, "%s: max-restarts must be >= 0\n", progname);
+          exit(1);
+        }
+        break;
+      case 'd':
+        restart_delay = atof(optarg);
+        if (restart_delay < 0) {
+          fprintf(stderr, "%s: restart-delay must be >= 0\n", progname);
+          exit(1);
+        }
+        break;
+      case 'b':
+        burst_limit = atoi(optarg);
+        if (burst_limit < 0) {
+          fprintf(stderr, "%s: burst must be >= 0\n", progname);
+          exit(1);
+        }
         break;
       default:
         usage();
@@ -362,25 +400,39 @@ int main(int argc, char** argv) {
       return code;
     }
 
+    restart_count++;
+
+    if (WIFSIGNALED(child_status))
+      emit_log("child (pid %d) killed by signal %d, restarting (%d)", child_pid,
+               WTERMSIG(child_status), restart_count);
+    else
+      emit_log("child (pid %d) exited with status %d, restarting (%d)",
+               child_pid, WEXITSTATUS(child_status), restart_count);
+
+    /* Max restarts limit */
+    if (max_restarts > 0 && restart_count >= max_restarts) {
+      emit_log("max restarts (%d) reached, exiting", max_restarts);
+      return code;
+    }
+
+    /* User-specified restart delay */
+    if (restart_delay > 0) {
+      struct timespec delay;
+      delay.tv_sec = (time_t)restart_delay;
+      delay.tv_nsec = (long)((restart_delay - delay.tv_sec) * 1e9);
+      nanosleep(&delay, NULL);
+    }
+
     /* Crash loop protection */
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     long elapsed_ns = (now.tv_sec - spawn_time.tv_sec) * 1000000000L +
                       (now.tv_nsec - spawn_time.tv_nsec);
 
-    if (elapsed_ns < RAPID_FAIL_WINDOW_NS)
-      rapid_fail_count++;
-    else
-      rapid_fail_count = 0;
+    rapid_fail_count =
+        (elapsed_ns < RAPID_FAIL_WINDOW_NS) ? rapid_fail_count + 1 : 0;
 
-    if (WIFSIGNALED(child_status))
-      emit_log("child (pid %d) killed by signal %d, restarting", child_pid,
-               WTERMSIG(child_status));
-    else
-      emit_log("child (pid %d) exited with status %d, restarting", child_pid,
-               WEXITSTATUS(child_status));
-
-    if (rapid_fail_count >= RAPID_FAIL_THRESHOLD) {
+    if (burst_limit > 0 && rapid_fail_count >= burst_limit) {
       struct timespec delay = {.tv_sec = 1, .tv_nsec = 0};
       emit_log("child failing rapidly, delaying restart");
       nanosleep(&delay, NULL);

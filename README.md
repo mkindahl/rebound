@@ -62,16 +62,19 @@ Rebound forks and execs the given command, then sits in a signal loop:
 ## Usage
 
 ```
-rebound [-0] [-g] [-q] <binary> [args...]
+rebound <options> [ -- ] <binary> [args...]
 ```
 
 ### Options
 
-| Option                    | Description                                   |
-|---------------------------|-----------------------------------------------|
-| `-0`, `--restart-on-zero` | Also restart when the child exits with code 0 |
-| `-g`, `--own-group`       | Place the child in its own process group      |
-| `-q`, `--quiet`           | Suppress all log output                       |
+| Option                            | Description                                                           |
+|-----------------------------------|-----------------------------------------------------------------------|
+| `-0`, `--restart-on-zero`         | Also restart when the child exits with code 0                         |
+| `-g`, `--own-group`               | Place the child in its own process group                              |
+| `-q`, `--quiet`                   | Suppress all log output                                               |
+| `-r N`, `--max-restarts N`        | Maximum number of restarts (0 = unlimited, default)                   |
+| `-d SECS`, `--restart-delay SECS` | Delay in seconds before restarting the child                          |
+| `-b N`, `--burst N`               | Rapid failure burst limit before throttling (default: 5, 0 = disable) |
 
 ### Process groups
 
