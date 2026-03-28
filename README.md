@@ -62,7 +62,7 @@ Rebound forks and execs the given command, then sits in a signal loop:
 ## Usage
 
 ```
-rebound [-0] [-g] <binary> [args...]
+rebound [-0] [-g] [-q] <binary> [args...]
 ```
 
 ### Options
@@ -71,6 +71,7 @@ rebound [-0] [-g] <binary> [args...]
 |---------------------------|-----------------------------------------------|
 | `-0`, `--restart-on-zero` | Also restart when the child exits with code 0 |
 | `-g`, `--own-group`       | Place the child in its own process group      |
+| `-q`, `--quiet`           | Suppress all log output                       |
 
 ### Process groups
 
@@ -176,8 +177,8 @@ prove -v t/
 
 Pre-built images are available on Docker Hub:
 
-| Image                       | Description                                  |
-|-----------------------------|----------------------------------------------|
+| Image                      | Description                                  |
+|----------------------------|----------------------------------------------|
 | `mkindahl/rebound:musl`    | Static musl binary on Alpine                 |
 | `mkindahl/rebound:scratch` | Static musl binary in a `FROM scratch` image |
 | `mkindahl/rebound:libc`    | Dynamic glibc binary on Debian               |

@@ -60,4 +60,56 @@ subtest 'exit code propagation - child exits 42' => sub {
     like($stderr, qr/restarting/, 'restarted (exit 42 triggers restart)');
 };
 
+subtest '-q suppresses all log output on normal exit' => sub {
+    my ($exit, $stderr, $reaped) = run_rebound(
+        args    => ['-q', '/bin/true'],
+        timeout => 3,
+    );
+    ok($reaped, 'rebound exited on its own');
+    is($exit, 0, 'exit code 0');
+    is($stderr, '', 'no output on stderr');
+};
+
+subtest '-q suppresses restart messages' => sub {
+    my $script = make_script('exit 1');
+    my ($exit, $stderr, $reaped) = run_rebound(
+        args      => ['-q', $script],
+        signal    => 'TERM',
+        sig_delay => 0.5,
+        timeout   => 5,
+    );
+    ok($reaped, 'rebound exited');
+    unlike($stderr, qr/restarting/, 'no restart message');
+    unlike($stderr, qr/starting/, 'no startup message');
+};
+
+subtest '-q suppresses signal forwarding messages' => sub {
+    my ($exit, $stderr, $reaped) = run_rebound(
+        args      => ['-q', '/bin/sleep', '60'],
+        signal    => 'TERM',
+        sig_delay => 0.3,
+        timeout   => 5,
+    );
+    ok($reaped, 'rebound exited');
+    is($stderr, '', 'no output on stderr');
+};
+
+subtest '--quiet long option works' => sub {
+    my ($exit, $stderr, $reaped) = run_rebound(
+        args    => ['--quiet', '/bin/true'],
+        timeout => 3,
+    );
+    ok($reaped, 'rebound exited on its own');
+    is($exit, 0, 'exit code 0');
+    is($stderr, '', 'no output on stderr');
+};
+
+subtest 'without -q messages are present' => sub {
+    my ($exit, $stderr) = run_rebound(
+        args    => ['/bin/true'],
+        timeout => 3,
+    );
+    like($stderr, qr/starting/, 'startup message present without -q');
+};
+
 done_testing;

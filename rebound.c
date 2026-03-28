@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,11 +35,24 @@ static sigset_t original_mask;
 static bool restart_on_zero = false;
 static bool own_group = false;
 static bool got_term = false;
+static bool quiet_mode = false;
 static int rapid_fail_count = 0;
+
+static void emit_log(const char* fmt, ...) {
+  if (!quiet_mode) {
+    va_list ap;
+    fprintf(stderr, "%s: ", progname);
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fprintf(stderr, "\n");
+  }
+}
 
 static struct option long_options[] = {
     {"restart-on-zero", no_argument, NULL, '0'},
     {"own-group", no_argument, NULL, 'g'},
+    {"quiet", no_argument, NULL, 'q'},
     {NULL, 0, NULL, 0}};
 
 /*
@@ -47,9 +61,10 @@ static struct option long_options[] = {
  * Prints usage information to stderr and exits with code 1.
  */
 static void usage(void) {
-  fprintf(stderr, "Usage: %s [-0] [-g] <binary> [args...]\n", progname);
+  fprintf(stderr, "Usage: %s [-0] [-g] [-q] <binary> [args...]\n", progname);
   fprintf(stderr, "  -0  Also restart when child exits with code 0\n");
   fprintf(stderr, "  -g  Place the child in its own process group\n");
+  fprintf(stderr, "  -q  Run in quiet mode\n");
   exit(1);
 }
 
@@ -81,7 +96,7 @@ static void setup_signals(void) {
   sigdelset(&all_signals, SIGSTOP);
 
   if (sigprocmask(SIG_BLOCK, &all_signals, &original_mask) < 0) {
-    fprintf(stderr, "%s: sigprocmask: %s\n", progname, strerror(errno));
+    emit_log("sigprocmask: %s", strerror(errno));
     exit(1);
   }
 
@@ -133,7 +148,7 @@ static pid_t spawn_child(char** argv, int own_group) {
   pid_t pid = fork();
 
   if (pid < 0) {
-    fprintf(stderr, "%s: fork: %s\n", progname, strerror(errno));
+    emit_log("fork: %s", strerror(errno));
     return -1;
   }
 
@@ -143,7 +158,7 @@ static pid_t spawn_child(char** argv, int own_group) {
       setpgid(0, 0);
     restore_signals_in_child();
     execvp(argv[0], argv);
-    fprintf(stderr, "%s: exec %s: %s\n", progname, argv[0], strerror(errno));
+    emit_log("exec %s: %s", argv[0], strerror(errno));
     _exit(127);
   }
 
@@ -264,13 +279,16 @@ char** parse_options(int argc, char** argv) {
   if (argc > 0)
     progname = argv[0];
 
-  while ((opt = getopt_long(argc, argv, "+0g", long_options, NULL)) != -1) {
+  while ((opt = getopt_long(argc, argv, "+0gq", long_options, NULL)) != -1) {
     switch (opt) {
       case '0':
         restart_on_zero = true;
         break;
       case 'g':
         own_group = true;
+        break;
+      case 'q':
+        quiet_mode = true;
         break;
       default:
         usage();
@@ -288,7 +306,7 @@ int main(int argc, char** argv) {
 
   setup_signals();
 
-  fprintf(stderr, "%s: starting %s\n", progname, child_argv[0]);
+  emit_log("starting %s", child_argv[0]);
 
   for (;;) {
     struct timespec spawn_time;
@@ -323,8 +341,7 @@ int main(int argc, char** argv) {
             /* FALLTHROUGH */
           default:
             kill(child_pid, sig);
-            fprintf(stderr, "%s: received signal %d, forwarding to child\n",
-                    progname, sig);
+            emit_log("received signal %d, forwarding to child", sig);
             break;
         }
       }
@@ -334,15 +351,14 @@ int main(int argc, char** argv) {
     int code = exit_code_from_status(child_status);
 
     if (got_term) {
-      fprintf(stderr, "%s: child (pid %d) exited, shutting down\n", progname,
-              (int)child_pid);
+      emit_log("child (pid %d) exited, shutting down", child_pid);
       return code;
     }
 
     if (!should_restart(child_status, restart_on_zero)) {
       if (WIFSIGNALED(child_status))
-        fprintf(stderr, "%s: child (pid %d) terminated by signal %d, exiting\n",
-                progname, (int)child_pid, WTERMSIG(child_status));
+        emit_log("child (pid %d) terminated by signal %d, exiting", child_pid,
+                 WTERMSIG(child_status));
       return code;
     }
 
@@ -358,16 +374,15 @@ int main(int argc, char** argv) {
       rapid_fail_count = 0;
 
     if (WIFSIGNALED(child_status))
-      fprintf(stderr, "%s: child (pid %d) killed by signal %d, restarting\n",
-              progname, (int)child_pid, WTERMSIG(child_status));
+      emit_log("child (pid %d) killed by signal %d, restarting", child_pid,
+               WTERMSIG(child_status));
     else
-      fprintf(stderr, "%s: child (pid %d) exited with status %d, restarting\n",
-              progname, (int)child_pid, WEXITSTATUS(child_status));
+      emit_log("child (pid %d) exited with status %d, restarting", child_pid,
+               WEXITSTATUS(child_status));
 
     if (rapid_fail_count >= RAPID_FAIL_THRESHOLD) {
       struct timespec delay = {.tv_sec = 1, .tv_nsec = 0};
-      fprintf(stderr, "%s: child failing rapidly, delaying restart\n",
-              progname);
+      emit_log("child failing rapidly, delaying restart");
       nanosleep(&delay, NULL);
     }
   }
