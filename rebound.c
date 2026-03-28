@@ -14,6 +14,7 @@
 #include <errno.h>
 #include <getopt.h>
 #include <signal.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,15 @@ static const char* progname = "rebound";
 static volatile pid_t child_pid = -1;
 static sigset_t all_signals;
 static sigset_t original_mask;
+static bool restart_on_zero = false;
+static bool own_group = false;
+static bool got_term = false;
+static int rapid_fail_count = 0;
+
+static struct option long_options[] = {
+    {"restart-on-zero", no_argument, NULL, '0'},
+    {"own-group", no_argument, NULL, 'g'},
+    {NULL, 0, NULL, 0}};
 
 /*
  * Function: usage
@@ -157,18 +167,17 @@ static pid_t spawn_child(char** argv, int own_group) {
  *
  *   1 if main_child was reaped, 0 otherwise.
  */
-static int reap_zombies(pid_t main_child, int* child_status) {
-  int found_main = 0;
-  int status;
-  pid_t pid;
+static bool reap_zombies(pid_t main_child, int* child_status) {
+  bool found_main = false;
 
   for (;;) {
-    pid = waitpid(-1, &status, WNOHANG);
+    int status;
+    pid_t pid = waitpid(-1, &status, WNOHANG);
     if (pid <= 0)
       break;
     if (pid == main_child) {
       *child_status = status;
-      found_main = 1;
+      found_main = true;
     }
   }
 
@@ -213,40 +222,44 @@ static int exit_code_from_status(int status) {
  *
  * Returns:
  *
- *   1 if the child should be restarted, 0 otherwise.
+ *   true if the child should be restarted, false otherwise.
  */
-static int should_restart(int status, int restart_on_zero) {
+static bool should_restart(int status, int restart_on_zero) {
   /* Killed by SIGTERM or SIGINT — do not restart */
   if (WIFSIGNALED(status)) {
     int sig = WTERMSIG(status);
     if (sig == SIGTERM || sig == SIGINT)
-      return 0;
-    return 1;
+      return false;
+    return true;
   }
 
   /* Normal exit */
   if (WIFEXITED(status)) {
     int code = WEXITSTATUS(status);
     if (code == 0 && !restart_on_zero)
-      return 0;
-    return 1;
+      return false;
+    return true;
   }
 
-  return 1;
+  return true;
 }
 
-int main(int argc, char** argv) {
-  int restart_on_zero = 0;
-  int own_group = 0;
-  int got_term = 0;
-  int rapid_fail_count = 0;
-  char** child_argv;
+/*
+ * Function: parse_options
+ *
+ * Parses command-line options and returns a pointer to the remaining arguments.
+ *
+ * Parameters:
+ *
+ *   argc - Number of command-line arguments.
+ *   argv - Array of command-line arguments.
+ *
+ * Returns:
+ *
+ *   A pointer to the array of remaining arguments.
+ */
+char** parse_options(int argc, char** argv) {
   int opt;
-
-  static struct option long_options[] = {
-      {"restart-on-zero", no_argument, NULL, '0'},
-      {"own-group", no_argument, NULL, 'g'},
-      {NULL, 0, NULL, 0}};
 
   if (argc > 0)
     progname = argv[0];
@@ -254,10 +267,10 @@ int main(int argc, char** argv) {
   while ((opt = getopt_long(argc, argv, "+0g", long_options, NULL)) != -1) {
     switch (opt) {
       case '0':
-        restart_on_zero = 1;
+        restart_on_zero = true;
         break;
       case 'g':
-        own_group = 1;
+        own_group = true;
         break;
       default:
         usage();
@@ -267,7 +280,11 @@ int main(int argc, char** argv) {
   if (optind >= argc)
     usage();
 
-  child_argv = argv + optind;
+  return argv + optind;
+}
+
+int main(int argc, char** argv) {
+  char** child_argv = parse_options(argc, argv);
 
   setup_signals();
 
@@ -277,13 +294,12 @@ int main(int argc, char** argv) {
     struct timespec spawn_time;
     struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
     int child_status = 0;
-    int child_exited = 0;
+    bool child_exited = false;
 
     clock_gettime(CLOCK_MONOTONIC, &spawn_time);
 
     child_pid = spawn_child(child_argv, own_group);
     if (child_pid < 0) {
-      /* fork failed — sleep and retry */
       struct timespec delay = {.tv_sec = 1, .tv_nsec = 0};
       nanosleep(&delay, NULL);
       continue;
@@ -291,33 +307,26 @@ int main(int argc, char** argv) {
 
     /* Main signal loop */
     while (!child_exited) {
-      int sig;
       siginfo_t info;
+      int sig = sigtimedwait(&all_signals, &info, &ts);
 
-      sig = sigtimedwait(&all_signals, &info, &ts);
-
-      if (sig < 0) {
-        if (errno == EAGAIN || errno == EINTR) {
-          /* Timeout or interrupted — do periodic reap */
-          child_exited = reap_zombies(child_pid, &child_status);
-          continue;
-        }
-        continue;
-      }
-
-      if (sig == SIGCHLD) {
+      if (sig < 0 && (errno == EAGAIN || errno == EINTR)) {
         child_exited = reap_zombies(child_pid, &child_status);
-        continue;
-      }
-
-      /* SIGTERM/SIGINT: forward and mark for shutdown */
-      if (sig == SIGTERM || sig == SIGINT) {
-        got_term = 1;
-      }
-
-      /* Forward signal to child */
-      if (child_pid > 0) {
-        kill(child_pid, sig);
+      } else if (sig > 0) {
+        switch (sig) {
+          case SIGCHLD:
+            child_exited = reap_zombies(child_pid, &child_status);
+            break;
+          case SIGTERM:
+          case SIGINT:
+            got_term = true;
+            /* FALLTHROUGH */
+          default:
+            kill(child_pid, sig);
+            fprintf(stderr, "%s: received signal %d, forwarding to child\n",
+                    progname, sig);
+            break;
+        }
       }
     }
 
@@ -331,10 +340,9 @@ int main(int argc, char** argv) {
     }
 
     if (!should_restart(child_status, restart_on_zero)) {
-      if (WIFSIGNALED(child_status)) {
+      if (WIFSIGNALED(child_status))
         fprintf(stderr, "%s: child (pid %d) terminated by signal %d, exiting\n",
                 progname, (int)child_pid, WTERMSIG(child_status));
-      }
       return code;
     }
 
@@ -344,27 +352,25 @@ int main(int argc, char** argv) {
     long elapsed_ns = (now.tv_sec - spawn_time.tv_sec) * 1000000000L +
                       (now.tv_nsec - spawn_time.tv_nsec);
 
-    if (elapsed_ns < RAPID_FAIL_WINDOW_NS) {
+    if (elapsed_ns < RAPID_FAIL_WINDOW_NS)
       rapid_fail_count++;
-    } else {
+    else
       rapid_fail_count = 0;
-    }
 
-    if (WIFSIGNALED(child_status)) {
+    if (WIFSIGNALED(child_status))
       fprintf(stderr, "%s: child (pid %d) killed by signal %d, restarting\n",
               progname, (int)child_pid, WTERMSIG(child_status));
-    } else {
+    else
       fprintf(stderr, "%s: child (pid %d) exited with status %d, restarting\n",
               progname, (int)child_pid, WEXITSTATUS(child_status));
-    }
 
     if (rapid_fail_count >= RAPID_FAIL_THRESHOLD) {
+      struct timespec delay = {.tv_sec = 1, .tv_nsec = 0};
       fprintf(stderr, "%s: child failing rapidly, delaying restart\n",
               progname);
-      struct timespec delay = {.tv_sec = 1, .tv_nsec = 0};
       nanosleep(&delay, NULL);
     }
   }
 
-  return 0;
+  return EXIT_SUCCESS;
 }
